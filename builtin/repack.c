@@ -182,6 +182,8 @@ int cmd_repack(int argc,
 	const char *cruft_expiration = NULL;
 	const char *expire_to = NULL;
 	const char *filter_to = NULL;
+	int filter_to_loose = 0;
+	struct oidset moved_loose = OIDSET_INIT;
 	const char *opt_window = NULL;
 	const char *opt_window_memory = NULL;
 	const char *opt_depth = NULL;
@@ -257,6 +259,8 @@ int cmd_repack(int argc,
 			   N_("pack prefix to store a pack containing pruned objects")),
 		OPT_STRING(0, "filter-to", &filter_to, N_("dir"),
 			   N_("pack prefix to store a pack containing filtered out objects")),
+		OPT_BOOL(0, "loose", &filter_to_loose,
+				N_("write filtered out objects loose into --filter-to object directory")),
 		OPT_BOOL(0, "drop-filtered", &drop_filtered,
 				N_("delete filtered out objects (requires --filter)")),
 		OPT_BOOL(0, "dry-run", &dry_run,
@@ -284,6 +288,15 @@ int cmd_repack(int argc,
 
 	die_for_incompatible_opt2(drop_filtered, "--drop-filtered",
 		!!filter_to, "--filter-to");
+
+	if (filter_to_loose) {
+		if (!filter_to)
+			die(_("option '%s' can only be used along with '%s'"),
+			    "--loose", "--filter-to");
+		if (po_args.max_pack_size)
+			die(_("options '%s' and '%s' cannot be used together"),
+			    "--loose", "--max-pack-size");
+	}
 
 	if (dry_run && !drop_filtered)
 		die(_("--dry-run only takes effect with --drop-filtered"));
@@ -698,6 +711,7 @@ int cmd_repack(int argc,
 		struct write_pack_opts opts = {
 			.po_args = &po_args,
 			.destination = filter_to,
+			.loose = filter_to_loose,
 			.packdir = packdir,
 			.packtmp = packtmp,
 		};
@@ -708,6 +722,14 @@ int cmd_repack(int argc,
 		ret = write_filtered_pack(&opts, &existing, &names);
 		if (ret)
 			goto cleanup;
+
+		if (filter_to_loose) {
+			ret = move_loose_filtered_objects(repo,
+					&po_args.filter_options, filter_to,
+					&moved_loose);
+			if (ret)
+				goto cleanup;
+		}
 	}
 
 	string_list_sort(&names);
@@ -764,6 +786,7 @@ int cmd_repack(int argc,
 		if (show_progress)
 			opts |= PRUNE_PACKED_VERBOSE;
 		prune_packed_objects(repo, opts);
+		remove_moved_loose_objects(repo, &moved_loose);
 
 		if (!keep_unreachable &&
 		    (!(pack_everything & LOOSEN_UNREACHABLE) ||
@@ -788,6 +811,7 @@ cleanup:
 	string_list_clear(&keep_pack_list, 0);
 	string_list_clear(&names, 1);
 	oidset_clear(&drop_oids);
+	oidset_clear(&moved_loose);
 	existing_packs_release(&existing);
 	pack_geometry_release(&geometry);
 	pack_objects_args_release(&po_args);
